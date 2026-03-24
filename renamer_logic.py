@@ -505,10 +505,10 @@ def parse_filename(filename: str) -> dict[str, Any]:
     return dict(guess)
 
 
-def enrich_with_tvdb(info_dict: dict[str, Any], tvdb_client) -> dict[str, Any]:
+def enrich_with_tvdb(info_dict: dict[str, Any], tvdb_client, force_tvdb_id: Optional[int] = None) -> dict[str, Any]:
     """Enrich file info with TVDB data (title, year, episode title)."""
     title = info_dict.get("title", "")
-    if not title:
+    if not title and not force_tvdb_id:
         return info_dict
 
     season = info_dict.get("season")
@@ -516,12 +516,49 @@ def enrich_with_tvdb(info_dict: dict[str, Any], tvdb_client) -> dict[str, Any]:
     year = info_dict.get("year")
 
     try:
-        tvdb_data = tvdb_client.lookup(
-            title=title,
-            season=int(season) if season else None,
-            episode=int(episode) if episode else None,
-            year=str(year) if year else None,
-        )
+        if force_tvdb_id:
+            # If we have a forced ID, get either series or movie info directly
+            # Note: We don't know for sure if it's a series or movie yet from just ID, 
+            # but usually users select from search results which tell us the type.
+            # tvdb_client.lookup doesn't support force_id yet, let's implement the logic here
+            # or update lookup. Let's update lookup in tvdb_client later or handle it here.
+            
+            # For now, let's assume if season/episode exists, it's a series.
+            is_series = season is not None or episode is not None
+            
+            if is_series:
+                best = tvdb_client.get_series(force_tvdb_id)
+                best_type = "series"
+            else:
+                best = tvdb_client.get_movie(force_tvdb_id)
+                best_type = "movie"
+                
+            tvdb_data = {
+                "tvdb_id": force_tvdb_id,
+                "tvdb_title": best.get("name") or best.get("nameTranslations", [""])[0],
+                "tvdb_year": best.get("year", ""),
+                "tvdb_type": best_type
+            }
+            
+            # IMDb ID
+            remote_ids = best.get("remoteIds") or []
+            for rid in remote_ids:
+                if rid.get("sourceName") == "IMDB":
+                    tvdb_data["tvdb_imdb_id"] = rid.get("id")
+                    break
+            
+            # Episode title
+            if is_series and season is not None and episode is not None:
+                ep = tvdb_client.find_episode(force_tvdb_id, int(season), int(episode))
+                if ep:
+                    tvdb_data["tvdb_episode_title"] = ep.get("name", "")
+        else:
+            tvdb_data = tvdb_client.lookup(
+                title=title,
+                season=int(season) if season else None,
+                episode=int(episode) if episode else None,
+                year=str(year) if year else None,
+            )
     except Exception:
         return info_dict
 
@@ -530,7 +567,14 @@ def enrich_with_tvdb(info_dict: dict[str, Any], tvdb_client) -> dict[str, Any]:
 
     # Override title if TVDB returned one
     if tvdb_data.get("tvdb_title"):
-        info_dict["title"] = tvdb_data["tvdb_title"]
+        tv_title = tvdb_data["tvdb_title"]
+        tv_year = str(tvdb_data.get("tvdb_year") or "")
+        
+        # If title ends with (Year) and it matches the year field, strip it
+        if tv_year and tv_title.endswith(f" ({tv_year})"):
+            tv_title = tv_title[:-(len(tv_year) + 3)].strip()
+            
+        info_dict["title"] = tv_title
 
     # Override year if TVDB returned one and guessit didn't find any
     if tvdb_data.get("tvdb_year") and not info_dict.get("year"):
@@ -645,7 +689,7 @@ def build_name(info: dict[str, Any]) -> str:
     return name
 
 
-def process_file(filepath: str, tag_override: Optional[str] = None, tvdb_client=None) -> dict[str, Any]:
+def process_file(filepath: str, tag_override: Optional[str] = None, tvdb_client=None, force_tvdb_id: Optional[int] = None) -> dict[str, Any]:
     filepath = os.path.abspath(filepath)
     mi_data = extract_mediainfo(filepath)
     guess = parse_filename(filepath)
@@ -719,13 +763,13 @@ def process_file(filepath: str, tag_override: Optional[str] = None, tvdb_client=
 
     # Enrich with TVDB data if client is provided
     if tvdb_client:
-        info_dict = enrich_with_tvdb(info_dict, tvdb_client)
+        info_dict = enrich_with_tvdb(info_dict, tvdb_client, force_tvdb_id=force_tvdb_id)
 
     return {"filepath": filepath, "old_name": os.path.basename(filepath),
             "new_name": build_name(info_dict) + os.path.splitext(filepath)[1], "info": info_dict}
 
 
-def process_directory(dirpath: str, tag_override: Optional[str] = None, tvdb_client=None) -> dict[str, Any]:
+def process_directory(dirpath: str, tag_override: Optional[str] = None, tvdb_client=None, force_tvdb_id: Optional[int] = None) -> dict[str, Any]:
     """Process all video files in a directory and suggest a folder name."""
     dirpath = os.path.abspath(dirpath)
     results = []
@@ -736,7 +780,7 @@ def process_directory(dirpath: str, tag_override: Optional[str] = None, tvdb_cli
         if os.path.splitext(entry)[1].lower() not in video_exts: continue
         if "sample" in entry.lower() and "!sample" not in entry.lower(): continue
         try:
-            results.append(process_file(os.path.join(dirpath, entry), tag_override, tvdb_client=tvdb_client))
+            results.append(process_file(os.path.join(dirpath, entry), tag_override, tvdb_client=tvdb_client, force_tvdb_id=force_tvdb_id))
         except Exception as e:
             results.append({"filepath": os.path.join(dirpath, entry), "old_name": entry, "new_name": None, "error": str(e)})
             

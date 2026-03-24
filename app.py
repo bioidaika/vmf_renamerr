@@ -770,6 +770,135 @@ HTML_TEMPLATE = r"""
             flex: 1;
             min-width: 0;
         }
+
+        /* Search Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(8px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            width: 90%;
+            max-width: 800px;
+            max-height: 85vh;
+            border-radius: 20px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+        }
+        .modal-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        .modal-search-bar {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            gap: 0.5rem;
+        }
+        .modal-search-bar input {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: white;
+        }
+        .modal-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem;
+        }
+        .tvdb-results-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+            gap: 1rem;
+        }
+        .tvdb-result-card {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 0.75rem;
+            display: flex;
+            gap: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .tvdb-result-card:hover {
+            border-color: var(--accent);
+            transform: translateY(-2px);
+            background: var(--bg-card-hover);
+        }
+        .tvdb-result-poster {
+            width: 80px;
+            height: 120px;
+            border-radius: 6px;
+            object-fit: cover;
+            background: #222;
+        }
+        .tvdb-result-info {
+            flex: 1;
+            overflow: hidden;
+        }
+        .tvdb-result-name {
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 0.25rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .tvdb-result-meta {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+        }
+        .tvdb-result-overview {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            line-height: 1.4;
+        }
+        .btn-search-manual {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.6rem;
+            cursor: pointer;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+        }
+        .btn-search-manual:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
     </style>
 </head>
 <body>
@@ -808,10 +937,7 @@ HTML_TEMPLATE = r"""
                     <label>Tag override</label>
                     <input type="text" id="tagInput" placeholder="e.g. FraMeSToR">
                 </div>
-                <label class="folder-rename-toggle" style="margin-bottom: 2px; align-self: flex-end;" title="Use TVDB API to get accurate title, year and episode name">
-                    <input type="checkbox" id="tvdbToggle">
-                    🔍 TVDB
-                </label>
+                <!-- TVDB toggle removed based on user request -->
                 <button class="btn btn-primary" id="scanBtn" onclick="scan()">
                     ⚡ Scan
                 </button>
@@ -849,6 +975,26 @@ HTML_TEMPLATE = r"""
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- TVDB Search Modal -->
+<div class="modal-overlay" id="searchModalOverlay">
+    <div class="modal">
+        <div class="modal-header">
+            <div class="modal-title">Manual TVDB Selection</div>
+            <button class="modal-close" onclick="closeSearchModal()">&times;</button>
+        </div>
+        <div class="modal-search-bar">
+            <input type="text" id="modalSearchInput" placeholder="Enter series or movie name...">
+            <button class="btn btn-primary" onclick="doTvdbSearch()">Search</button>
+            <button class="btn btn-secondary" style="background: #333; margin-left: 0.5rem;" onclick="skipTvdb()">Just Scan (Local)</button>
+        </div>
+        <div class="modal-body" id="modalSearchResults">
+            <div class="empty-state" style="padding: 2rem;">
+                <p>Search for a title to see results from TVDB</p>
+            </div>
+        </div>
+    </div>
+</div>
 
 <script>
 let currentResults = [];
@@ -964,21 +1110,50 @@ function showLoading() {
 
 async function scan() {
     const path = document.getElementById('pathInput').value.trim();
-    const tag = document.getElementById('tagInput').value.trim();
     if (!path) {
         showToast('Please enter a path', 'error');
         return;
     }
 
+    try {
+        const resp = await fetch(`/api/tvdb/suggest?path=${encodeURIComponent(path)}`);
+        const data = await resp.json();
+        if (data.error) {
+            // If path invalid, show error now
+            showToast(data.error, 'error');
+            return;
+        }
+        
+        // Open modal with suggested title
+        const type = path.includes('S0') || path.includes('E0') ? 'series' : 'movie';
+        openSearchModal(data.title || '', type, path.includes('\\') || path.includes('/'));
+    } catch (e) {
+        showToast('Error getting suggestion: ' + e.message, 'error');
+    }
+}
+
+async function skipTvdb() {
+    closeSearchModal();
+    performScan(false);
+}
+
+async function performScan(tvdbEnabled, forceTvdbId = null) {
+    const path = document.getElementById('pathInput').value.trim();
+    const tag = document.getElementById('tagInput').value.trim();
+    
     showLoading();
     document.getElementById('scanBtn').disabled = true;
 
     try {
-        const tvdbLookup = document.getElementById('tvdbToggle').checked;
         const resp = await fetch('/api/scan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path, tag: tag || null, tvdb_lookup: tvdbLookup })
+            body: JSON.stringify({ 
+                path, 
+                tag: tag || null, 
+                tvdb_lookup: tvdbEnabled,
+                force_tvdb_id: forceTvdbId 
+            })
         });
         const data = await resp.json();
         if (data.error) {
@@ -994,7 +1169,6 @@ async function scan() {
         }
 
         if (data.results) { 
-            // Case 1: Directory scan results
             scanContext = {
                 dirpath: data.dirpath,
                 old_folder: data.old_folder,
@@ -1002,7 +1176,6 @@ async function scan() {
             };
             currentResults = data.results;
         } else {
-            // Case 2: Single file result (backward compatibility or future)
             scanContext = null;
             currentResults = data.files || [];
         }
@@ -1012,6 +1185,62 @@ async function scan() {
     } finally {
         document.getElementById('scanBtn').disabled = false;
     }
+}
+
+let pendingSearchContext = null;
+
+function openSearchModal(title, type, isFolder = false) {
+    pendingSearchContext = { title, type, isFolder };
+    document.getElementById('searchModalOverlay').style.display = 'flex';
+    const input = document.getElementById('modalSearchInput');
+    input.value = title;
+    input.onkeyup = (e) => { if(e.key === 'Enter') doTvdbSearch(); };
+    document.getElementById('modalSearchResults').innerHTML = '<div class="empty-state" style="padding: 2rem;"><p>Searching...</p></div>';
+    doTvdbSearch();
+}
+
+function closeSearchModal() {
+    document.getElementById('searchModalOverlay').style.display = 'none';
+    pendingSearchContext = null;
+}
+
+async function doTvdbSearch() {
+    const query = document.getElementById('modalSearchInput').value.trim();
+    if (!query) return;
+    
+    try {
+        const resp = await fetch(`/api/tvdb/search?query=${encodeURIComponent(query)}&type=${pendingSearchContext?.type || ''}`);
+        const data = await resp.json();
+        
+        const results = data.results || [];
+        const container = document.getElementById('modalSearchResults');
+        
+        if (!results.length) {
+            container.innerHTML = '<div class="empty-state" style="padding: 2rem;"><p>No results found on TVDB</p></div>';
+            return;
+        }
+        
+        container.innerHTML = `<div class="tvdb-results-list">
+            ${results.map(r => `
+                <div class="tvdb-result-card" onclick="selectTvdbResult('${r.tvdb_id}')">
+                    <img src="${r.image_url || 'https://via.placeholder.com/80x120?text=No+Image'}" class="tvdb-result-poster">
+                    <div class="tvdb-result-info">
+                        <div class="tvdb-result-name">${r.name}</div>
+                        <div class="tvdb-result-meta">${r.type?.toUpperCase()} • ${r.year || 'N/A'} • ID: ${r.tvdb_id}</div>
+                        <div class="tvdb-result-overview">${r.overview || 'No description available.'}</div>
+                    </div>
+                </div>
+            `).join('')}
+        </div>`;
+    } catch (e) {
+        showToast('Search failed: ' + e.message, 'error');
+    }
+}
+
+async function selectTvdbResult(tvdbId) {
+    if (!pendingSearchContext) return;
+    closeSearchModal();
+    performScan(true, tvdbId);
 }
 
 function renderResults() {
@@ -1070,9 +1299,12 @@ function renderResults() {
     let html = '';
 
     // Folder Rename Alert
-    if (scanContext && scanContext.new_folder && scanContext.old_folder !== scanContext.new_folder) {
+    if (scanContext && scanContext.new_folder) {
+        const isChanged = scanContext.old_folder !== scanContext.new_folder;
+        const folderTitle = (currentResults[0]?.info?.title) || scanContext.new_folder.split('(')[0].trim();
+        
         html += `
-            <div class="file-item changed" style="margin-bottom: 1.5rem; border-left-color: var(--accent);">
+            <div class="file-item ${isChanged ? 'changed' : 'same'}" style="margin-bottom: 1.5rem; border-left-color: var(--accent);">
                 <div class="file-names">
                     <div class="file-old"><span class="label" style="color: var(--accent);">DIR</span>${scanContext.old_folder}</div>
                     <div class="file-new">
@@ -1081,8 +1313,10 @@ function renderResults() {
                     </div>
                 </div>
                 <div style="margin-top: 0.75rem; margin-left: 38px; display: flex; align-items: center; justify-content: space-between;">
-                    <div class="tag" style="background: var(--accent-glow); color: var(--accent);">SUGGESTED FOLDER NAME</div>
-                    <button class="btn btn-primary" style="padding: 0.4rem 1rem; font-size: 0.75rem;" onclick="renameFolder()">Rename Folder Only</button>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <div class="tag" style="background: var(--accent-glow); color: var(--accent);">FOLDER SUGGESTION</div>
+                    </div>
+                    ${isChanged ? `<button class="btn btn-primary" style="padding: 0.4rem 1rem; font-size: 0.75rem;" onclick="renameFolder()">Rename Folder Only</button>` : ''}
                 </div>
             </div>
         `;
@@ -1122,7 +1356,15 @@ function renderResults() {
             }
             if (info.hdr) tags += `<span class="tag tag-hdr">${info.hdr}</span>`;
             if (info.video_encode) tags += `<span class="tag tag-video">${info.video_encode}</span>`;
-            if (info.tvdb_matched) tags += `<span class="tag tag-tvdb" title="TVDB ID: ${info.tvdb_id || ''}">TVDB ✓</span>`;
+            
+            const tvdbLabel = info.tvdb_matched ? 'TVDB ✓' : 'TVDB ?';
+            const tvdbClass = info.tvdb_matched ? 'tag-tvdb' : 'tag-source'; // use red-ish if not matched
+            const searchTitle = info.title || r.old_name;
+            const searchType = (info.season || info.episode) ? 'series' : 'movie';
+
+            tags += `<span class="tag ${tvdbClass}" title="TVDB ID: ${info.tvdb_id || 'Not matched'}">
+                ${tvdbLabel}
+            </span>`;
 
             html += `
                 <div class="file-item changed" id="file-${i}">
@@ -1283,16 +1525,23 @@ def api_scan():
     path = data.get('path')
     tag_override = data.get('tag')
     tvdb_lookup = data.get('tvdb_lookup', False)
+    force_tvdb_id = data.get('force_tvdb_id')
     
     if not path or not os.path.exists(path):
         return jsonify({'error': 'Invalid path'}), 400
     
+    # Convert force_tvdb_id to int if provided
+    try:
+        force_id = int(force_tvdb_id) if force_tvdb_id else None
+    except (ValueError, TypeError):
+        force_id = None
+    
     # Use TVDB client if lookup is requested and client is available
-    client = _tvdb_client if tvdb_lookup and _tvdb_client else None
+    client = _tvdb_client if (tvdb_lookup or force_id) and _tvdb_client else None
     
     try:
         if os.path.isdir(path):
-            result = process_directory(path, tag_override, tvdb_client=client)
+            result = process_directory(path, tag_override, tvdb_client=client, force_tvdb_id=force_id)
             return jsonify({
                 'dirpath': result['dirpath'],
                 'old_folder': result['old_folder'],
@@ -1301,7 +1550,7 @@ def api_scan():
                 'tvdb_enabled': client is not None,
             })
         else:
-            res = process_file(path, tag_override, tvdb_client=client)
+            res = process_file(path, tag_override, tvdb_client=client, force_tvdb_id=force_id)
             return jsonify({'results': [res], 'tvdb_enabled': client is not None})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1361,6 +1610,51 @@ def api_rename_folder():
         if success:
             return jsonify({'success': True})
         return jsonify({'error': res}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tvdb/suggest')
+def api_tvdb_suggest():
+    path = request.args.get('path')
+    if not path or not os.path.exists(path):
+        return jsonify({'error': 'Invalid path'}), 400
+    
+    suggested_title = ""
+    if os.path.isdir(path):
+        # Suggest from folder name
+        suggested_title = os.path.basename(path)
+    else:
+        # Suggest from filename
+        suggested_title = os.path.splitext(os.path.basename(path))[0]
+    
+    # Clean up common garbage like 1080p, BluRay etc using guessit if possible
+    try:
+        from renamer_logic import parse_filename
+        guess = parse_filename(suggested_title)
+        if guess.get('title'):
+            suggested_title = guess['title']
+    except Exception:
+        pass
+        
+    return jsonify({'title': suggested_title})
+
+
+@app.route('/api/tvdb/search')
+def api_tvdb_search():
+    if not _tvdb_client:
+        return jsonify({'error': 'TVDB client not initialized'}), 500
+    
+    query = request.args.get('query')
+    media_type = request.args.get('type') # 'series' or 'movie'
+    
+    if not query:
+        return jsonify({'error': 'Missing query'}), 400
+        
+    try:
+        results = _tvdb_client.search(query, media_type=media_type)
+        # Results from search v4 usually include: tvdb_id, name, year, image_url, overview
+        return jsonify({'results': results})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
