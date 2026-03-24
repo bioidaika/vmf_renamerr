@@ -505,6 +505,50 @@ def parse_filename(filename: str) -> dict[str, Any]:
     return dict(guess)
 
 
+def enrich_with_tvdb(info_dict: dict[str, Any], tvdb_client) -> dict[str, Any]:
+    """Enrich file info with TVDB data (title, year, episode title)."""
+    title = info_dict.get("title", "")
+    if not title:
+        return info_dict
+
+    season = info_dict.get("season")
+    episode = info_dict.get("episode")
+    year = info_dict.get("year")
+
+    try:
+        tvdb_data = tvdb_client.lookup(
+            title=title,
+            season=int(season) if season else None,
+            episode=int(episode) if episode else None,
+            year=str(year) if year else None,
+        )
+    except Exception:
+        return info_dict
+
+    if not tvdb_data:
+        return info_dict
+
+    # Override title if TVDB returned one
+    if tvdb_data.get("tvdb_title"):
+        info_dict["title"] = tvdb_data["tvdb_title"]
+
+    # Override year if TVDB returned one and guessit didn't find any
+    if tvdb_data.get("tvdb_year") and not info_dict.get("year"):
+        info_dict["year"] = tvdb_data["tvdb_year"]
+
+    # Override episode title if TVDB returned one
+    if tvdb_data.get("tvdb_episode_title"):
+        info_dict["episode_title"] = tvdb_data["tvdb_episode_title"]
+
+    # Store TVDB metadata for UI display
+    info_dict["tvdb_matched"] = True
+    info_dict["tvdb_id"] = tvdb_data.get("tvdb_id", "")
+    if tvdb_data.get("tvdb_imdb_id"):
+        info_dict["tvdb_imdb_id"] = tvdb_data["tvdb_imdb_id"]
+
+    return info_dict
+
+
 def _sanitize_title(title: str) -> str:
     title = title.strip().replace(" ", ".")
     title = re.sub(r'\.{2,}', '.', title)
@@ -601,7 +645,7 @@ def build_name(info: dict[str, Any]) -> str:
     return name
 
 
-def process_file(filepath: str, tag_override: Optional[str] = None) -> dict[str, Any]:
+def process_file(filepath: str, tag_override: Optional[str] = None, tvdb_client=None) -> dict[str, Any]:
     filepath = os.path.abspath(filepath)
     mi_data = extract_mediainfo(filepath)
     guess = parse_filename(filepath)
@@ -672,11 +716,16 @@ def process_file(filepath: str, tag_override: Optional[str] = None) -> dict[str,
         "dual_audio": detect_dual_audio(mi_data) or ("dual" in filepath.lower() or "dual" in str(guess.get("audio_channels", "")).lower()),
         "tag": tag_override or guess.get("release_group", "")
     }
+
+    # Enrich with TVDB data if client is provided
+    if tvdb_client:
+        info_dict = enrich_with_tvdb(info_dict, tvdb_client)
+
     return {"filepath": filepath, "old_name": os.path.basename(filepath),
             "new_name": build_name(info_dict) + os.path.splitext(filepath)[1], "info": info_dict}
 
 
-def process_directory(dirpath: str, tag_override: Optional[str] = None) -> dict[str, Any]:
+def process_directory(dirpath: str, tag_override: Optional[str] = None, tvdb_client=None) -> dict[str, Any]:
     """Process all video files in a directory and suggest a folder name."""
     dirpath = os.path.abspath(dirpath)
     results = []
@@ -687,7 +736,7 @@ def process_directory(dirpath: str, tag_override: Optional[str] = None) -> dict[
         if os.path.splitext(entry)[1].lower() not in video_exts: continue
         if "sample" in entry.lower() and "!sample" not in entry.lower(): continue
         try:
-            results.append(process_file(os.path.join(dirpath, entry), tag_override))
+            results.append(process_file(os.path.join(dirpath, entry), tag_override, tvdb_client=tvdb_client))
         except Exception as e:
             results.append({"filepath": os.path.join(dirpath, entry), "old_name": entry, "new_name": None, "error": str(e)})
             

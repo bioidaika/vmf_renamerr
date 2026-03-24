@@ -8,10 +8,25 @@ import os
 import json
 import psutil
 from flask import Flask, render_template_string, request, jsonify
+from dotenv import load_dotenv
 
 from renamer_logic import process_file, process_directory, rename_file, rename_directory
 
+# Load .env file
+load_dotenv()
+
 app = Flask(__name__)
+
+# Initialize TVDB client if API key is configured
+_tvdb_client = None
+_tvdb_api_key = os.environ.get("TVDB_API_KEY", "")
+if _tvdb_api_key:
+    try:
+        from tvdb_client import TVDBClient
+        _tvdb_client = TVDBClient(_tvdb_api_key)
+        print(f"TVDB client initialized (API key: {_tvdb_api_key[:8]}...)")
+    except Exception as e:
+        print(f"Warning: Failed to initialize TVDB client: {e}")
 
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -594,6 +609,7 @@ HTML_TEMPLATE = r"""
         .tag-hdr { background: rgba(240, 165, 0, 0.15); color: #f0a500; }
         .tag-type { background: rgba(0, 214, 143, 0.15); color: #00d68f; }
         .tag-source { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+        .tag-tvdb { background: rgba(52, 211, 153, 0.15); color: #34d399; }
 
         .file-same-label {
             font-family: 'JetBrains Mono', monospace;
@@ -792,6 +808,10 @@ HTML_TEMPLATE = r"""
                     <label>Tag override</label>
                     <input type="text" id="tagInput" placeholder="e.g. FraMeSToR">
                 </div>
+                <label class="folder-rename-toggle" style="margin-bottom: 2px; align-self: flex-end;" title="Use TVDB API to get accurate title, year and episode name">
+                    <input type="checkbox" id="tvdbToggle">
+                    🔍 TVDB
+                </label>
                 <button class="btn btn-primary" id="scanBtn" onclick="scan()">
                     ⚡ Scan
                 </button>
@@ -954,10 +974,11 @@ async function scan() {
     document.getElementById('scanBtn').disabled = true;
 
     try {
+        const tvdbLookup = document.getElementById('tvdbToggle').checked;
         const resp = await fetch('/api/scan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path, tag: tag || null })
+            body: JSON.stringify({ path, tag: tag || null, tvdb_lookup: tvdbLookup })
         });
         const data = await resp.json();
         if (data.error) {
@@ -1101,6 +1122,7 @@ function renderResults() {
             }
             if (info.hdr) tags += `<span class="tag tag-hdr">${info.hdr}</span>`;
             if (info.video_encode) tags += `<span class="tag tag-video">${info.video_encode}</span>`;
+            if (info.tvdb_matched) tags += `<span class="tag tag-tvdb" title="TVDB ID: ${info.tvdb_id || ''}">TVDB ✓</span>`;
 
             html += `
                 <div class="file-item changed" id="file-${i}">
@@ -1260,23 +1282,27 @@ def api_scan():
     data = request.json
     path = data.get('path')
     tag_override = data.get('tag')
+    tvdb_lookup = data.get('tvdb_lookup', False)
     
     if not path or not os.path.exists(path):
         return jsonify({'error': 'Invalid path'}), 400
     
+    # Use TVDB client if lookup is requested and client is available
+    client = _tvdb_client if tvdb_lookup and _tvdb_client else None
+    
     try:
         if os.path.isdir(path):
-            result = process_directory(path, tag_override)
-            # Response: { dirpath, old_folder, new_folder, files: [...] }
+            result = process_directory(path, tag_override, tvdb_client=client)
             return jsonify({
                 'dirpath': result['dirpath'],
                 'old_folder': result['old_folder'],
                 'new_folder': result['new_folder'],
-                'results': result['files']
+                'results': result['files'],
+                'tvdb_enabled': client is not None,
             })
         else:
-            res = process_file(path, tag_override)
-            return jsonify({'results': [res]})
+            res = process_file(path, tag_override, tvdb_client=client)
+            return jsonify({'results': [res], 'tvdb_enabled': client is not None})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
