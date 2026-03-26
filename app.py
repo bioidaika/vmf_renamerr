@@ -28,6 +28,17 @@ if _tvdb_api_key:
     except Exception as e:
         print(f"Warning: Failed to initialize TVDB client: {e}")
 
+# Initialize TMDB client if API key is configured
+_tmdb_client = None
+_tmdb_api_key = os.environ.get("TMDB_API_KEY", "")
+if _tmdb_api_key:
+    try:
+        from tmdb_client import TMDBClient
+        _tmdb_client = TMDBClient(_tmdb_api_key)
+        print(f"TMDB client initialized (API key: {_tmdb_api_key[:8]}...)")
+    except Exception as e:
+        print(f"Warning: Failed to initialize TMDB client: {e}")
+
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -84,6 +95,42 @@ HTML_TEMPLATE = r"""
             top: 0;
             z-index: 100;
             backdrop-filter: blur(20px);
+        }
+
+        /* Mode Switch */
+        .mode-switch {
+            display: flex;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            margin-left: 1.5rem;
+        }
+
+        .mode-btn {
+            padding: 0.45rem 1rem;
+            border: none;
+            background: none;
+            color: var(--text-muted);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            white-space: nowrap;
+        }
+
+        .mode-btn:hover {
+            color: var(--text-secondary);
+        }
+
+        .mode-btn.active {
+            background: var(--gradient-1);
+            color: white;
+            font-weight: 600;
         }
 
         .header-logo {
@@ -906,6 +953,10 @@ HTML_TEMPLATE = r"""
 <header class="header">
     <div class="header-logo">R</div>
     <h1>VMF Renamer</h1>
+    <div class="mode-switch">
+        <button class="mode-btn active" id="modeTv" onclick="setMode('tv')">📺 TV Series</button>
+        <button class="mode-btn" id="modeMovie" onclick="setMode('movie')">🎬 Movie</button>
+    </div>
     <span class="header-subtitle">MediaInfo-based file renaming for torrent trackers</span>
 </header>
 
@@ -980,7 +1031,7 @@ HTML_TEMPLATE = r"""
 <div class="modal-overlay" id="searchModalOverlay">
     <div class="modal">
         <div class="modal-header">
-            <div class="modal-title">Manual TVDB Selection</div>
+            <div class="modal-title" id="searchModalTitle">Manual Selection</div>
             <button class="modal-close" onclick="closeSearchModal()">&times;</button>
         </div>
         <div class="modal-search-bar">
@@ -999,6 +1050,7 @@ HTML_TEMPLATE = r"""
 <script>
 let currentResults = [];
 let scanContext = null;
+let currentMode = 'tv';  // 'tv' or 'movie'
 let currentSidebarPath = null;
 
 async function fetchDrives() {
@@ -1089,6 +1141,21 @@ function goBack() {
 // Initial fetch
 fetchDrives();
 
+function setMode(mode) {
+    currentMode = mode;
+    document.getElementById('modeTv').classList.toggle('active', mode === 'tv');
+    document.getElementById('modeMovie').classList.toggle('active', mode === 'movie');
+}
+
+function autoDetectMode(path) {
+    const p = path.toLowerCase();
+    // If path contains season/episode patterns, likely TV
+    if (/s\d{1,2}e\d{1,2}/i.test(p) || /season/i.test(p) || /episode/i.test(p)) {
+        return 'tv';
+    }
+    return 'movie';
+}
+
 function showToast(msg, type = 'success') {
     const toast = document.getElementById('toast');
     toast.textContent = msg;
@@ -1115,17 +1182,20 @@ async function scan() {
         return;
     }
 
+    // Auto-detect mode from path
+    const detectedMode = autoDetectMode(path);
+    setMode(detectedMode);
+
     try {
         const resp = await fetch(`/api/tvdb/suggest?path=${encodeURIComponent(path)}`);
         const data = await resp.json();
         if (data.error) {
-            // If path invalid, show error now
             showToast(data.error, 'error');
             return;
         }
         
-        // Open modal with suggested title
-        const type = path.includes('S0') || path.includes('E0') ? 'series' : 'movie';
+        // Open modal with suggested title — search type depends on mode
+        const type = currentMode === 'tv' ? 'series' : 'movie';
         openSearchModal(data.title || '', type, path.includes('\\') || path.includes('/'));
     } catch (e) {
         showToast('Error getting suggestion: ' + e.message, 'error');
@@ -1151,6 +1221,7 @@ async function performScan(tvdbEnabled, forceTvdbId = null) {
             body: JSON.stringify({ 
                 path, 
                 tag: tag || null, 
+                mode: currentMode,
                 tvdb_lookup: tvdbEnabled,
                 force_tvdb_id: forceTvdbId 
             })
@@ -1192,6 +1263,8 @@ let pendingSearchContext = null;
 function openSearchModal(title, type, isFolder = false) {
     pendingSearchContext = { title, type, isFolder };
     document.getElementById('searchModalOverlay').style.display = 'flex';
+    const dbName = currentMode === 'movie' ? 'TMDB' : 'TVDB';
+    document.getElementById('searchModalTitle').textContent = `${currentMode === 'movie' ? '🎬' : '📺'} Search ${dbName}`;
     const input = document.getElementById('modalSearchInput');
     input.value = title;
     input.onkeyup = (e) => { if(e.key === 'Enter') doTvdbSearch(); };
@@ -1209,28 +1282,40 @@ async function doTvdbSearch() {
     if (!query) return;
     
     try {
-        const resp = await fetch(`/api/tvdb/search?query=${encodeURIComponent(query)}&type=${pendingSearchContext?.type || ''}`);
+        let resp;
+        const searchType = pendingSearchContext?.type || '';
+        
+        if (currentMode === 'movie') {
+            // Use TMDB for movies
+            resp = await fetch(`/api/tmdb/search?query=${encodeURIComponent(query)}`);
+        } else {
+            // Use TVDB for TV series
+            resp = await fetch(`/api/tvdb/search?query=${encodeURIComponent(query)}&type=${searchType}`);
+        }
         const data = await resp.json();
         
         const results = data.results || [];
         const container = document.getElementById('modalSearchResults');
+        const dbName = currentMode === 'movie' ? 'TMDB' : 'TVDB';
         
         if (!results.length) {
-            container.innerHTML = '<div class="empty-state" style="padding: 2rem;"><p>No results found on TVDB</p></div>';
+            container.innerHTML = `<div class="empty-state" style="padding: 2rem;"><p>No results found on ${dbName}</p></div>`;
             return;
         }
         
         container.innerHTML = `<div class="tvdb-results-list">
-            ${results.map(r => `
-                <div class="tvdb-result-card" onclick="selectTvdbResult('${r.tvdb_id}')">
+            ${results.map(r => {
+                const idField = currentMode === 'movie' ? (r.tmdb_id || r.tvdb_id) : r.tvdb_id;
+                return `
+                <div class="tvdb-result-card" onclick="selectTvdbResult('${idField}')">
                     <img src="${r.image_url || 'https://via.placeholder.com/80x120?text=No+Image'}" class="tvdb-result-poster">
                     <div class="tvdb-result-info">
                         <div class="tvdb-result-name">${r.name}</div>
-                        <div class="tvdb-result-meta">${r.type?.toUpperCase()} • ${r.year || 'N/A'} • ID: ${r.tvdb_id}</div>
+                        <div class="tvdb-result-meta">${(r.type || currentMode).toUpperCase()} • ${r.year || 'N/A'} • ${dbName} ID: ${idField}</div>
                         <div class="tvdb-result-overview">${r.overview || 'No description available.'}</div>
                     </div>
                 </div>
-            `).join('')}
+            `}).join('')}
         </div>`;
     } catch (e) {
         showToast('Search failed: ' + e.message, 'error');
@@ -1357,13 +1442,14 @@ function renderResults() {
             if (info.hdr) tags += `<span class="tag tag-hdr">${info.hdr}</span>`;
             if (info.video_encode) tags += `<span class="tag tag-video">${info.video_encode}</span>`;
             
-            const tvdbLabel = info.tvdb_matched ? 'TVDB ✓' : 'TVDB ?';
-            const tvdbClass = info.tvdb_matched ? 'tag-tvdb' : 'tag-source'; // use red-ish if not matched
-            const searchTitle = info.title || r.old_name;
-            const searchType = (info.season || info.episode) ? 'series' : 'movie';
+            const hasMatch = info.tvdb_matched || info.tmdb_matched;
+            const dbName = info.tmdb_matched ? 'TMDB' : 'TVDB';
+            const dbId = info.tmdb_id || info.tvdb_id;
+            const matchLabel = hasMatch ? `${dbName} ✓` : `${dbName} ?`;
+            const matchClass = hasMatch ? 'tag-tvdb' : 'tag-source';
 
-            tags += `<span class="tag ${tvdbClass}" title="TVDB ID: ${info.tvdb_id || 'Not matched'}">
-                ${tvdbLabel}
+            tags += `<span class="tag ${matchClass}" title="${dbName} ID: ${dbId || 'Not matched'}">
+                ${matchLabel}
             </span>`;
 
             html += `
@@ -1524,6 +1610,7 @@ def api_scan():
     data = request.json
     path = data.get('path')
     tag_override = data.get('tag')
+    mode = data.get('mode', 'tv')  # 'tv' or 'movie'
     tvdb_lookup = data.get('tvdb_lookup', False)
     force_tvdb_id = data.get('force_tvdb_id')
     
@@ -1536,24 +1623,81 @@ def api_scan():
     except (ValueError, TypeError):
         force_id = None
     
-    # Use TVDB client if lookup is requested and client is available
-    client = _tvdb_client if (tvdb_lookup or force_id) and _tvdb_client else None
+    # Choose client based on mode
+    if mode == 'movie':
+        # Movie mode: use TMDB client, no TVDB
+        client = None  # Don't use TVDB for movies
+        tmdb = _tmdb_client if (tvdb_lookup or force_id) and _tmdb_client else None
+    else:
+        # TV mode: use TVDB client
+        client = _tvdb_client if (tvdb_lookup or force_id) and _tvdb_client else None
+        tmdb = None
     
     try:
         if os.path.isdir(path):
-            result = process_directory(path, tag_override, tvdb_client=client, force_tvdb_id=force_id)
+            result = process_directory(path, tag_override, tvdb_client=client, force_tvdb_id=force_id, mode=mode)
+            
+            # For movie mode with TMDB, enrich with TMDB data
+            if tmdb and mode == 'movie':
+                for file_result in result.get('files', []):
+                    if file_result.get('info'):
+                        _enrich_movie_with_tmdb(file_result['info'], tmdb, force_id)
+                # Update folder suggestion based on enriched first file
+                valid_files = [f for f in result['files'] if f.get('new_name')]
+                if valid_files:
+                    from renamer_logic import build_name
+                    result['new_folder'] = build_name(valid_files[0]['info'])
+                    valid_files[0]['new_name'] = result['new_folder'] + os.path.splitext(valid_files[0]['filepath'])[1]
+            
             return jsonify({
                 'dirpath': result['dirpath'],
                 'old_folder': result['old_folder'],
                 'new_folder': result['new_folder'],
                 'results': result['files'],
-                'tvdb_enabled': client is not None,
+                'tvdb_enabled': client is not None or tmdb is not None,
             })
         else:
-            res = process_file(path, tag_override, tvdb_client=client, force_tvdb_id=force_id)
-            return jsonify({'results': [res], 'tvdb_enabled': client is not None})
+            res = process_file(path, tag_override, tvdb_client=client, force_tvdb_id=force_id, mode=mode)
+            
+            # For movie mode with TMDB, enrich with TMDB data
+            if tmdb and mode == 'movie' and res.get('info'):
+                _enrich_movie_with_tmdb(res['info'], tmdb, force_id)
+                from renamer_logic import build_name
+                res['new_name'] = build_name(res['info']) + os.path.splitext(res['filepath'])[1]
+            
+            return jsonify({'results': [res], 'tvdb_enabled': client is not None or tmdb is not None})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+def _enrich_movie_with_tmdb(info: dict, tmdb_client, force_id=None):
+    """Enrich movie info dict with TMDB data."""
+    title = info.get('title', '')
+    year = str(info.get('year', '')) or None
+    
+    try:
+        tmdb_data = tmdb_client.lookup(title=title, year=year, force_id=force_id)
+    except Exception:
+        return
+    
+    if not tmdb_data:
+        return
+    
+    if tmdb_data.get('tmdb_title'):
+        tv_title = tmdb_data['tmdb_title']
+        tv_year = str(tmdb_data.get('tmdb_year') or '')
+        # Strip year suffix if present in title
+        if tv_year and tv_title.endswith(f' ({tv_year})'):
+            tv_title = tv_title[:-(len(tv_year) + 3)].strip()
+        info['title'] = tv_title
+    
+    if tmdb_data.get('tmdb_year'):
+        info['year'] = tmdb_data['tmdb_year']
+    
+    info['tmdb_matched'] = True
+    info['tmdb_id'] = tmdb_data.get('tmdb_id', '')
+    if tmdb_data.get('tmdb_imdb_id'):
+        info['tmdb_imdb_id'] = tmdb_data['tmdb_imdb_id']
 
 
 @app.route('/api/rename', methods=['POST'])
@@ -1654,6 +1798,24 @@ def api_tvdb_search():
     try:
         results = _tvdb_client.search(query, media_type=media_type)
         # Results from search v4 usually include: tvdb_id, name, year, image_url, overview
+        return jsonify({'results': results})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tmdb/search')
+def api_tmdb_search():
+    if not _tmdb_client:
+        return jsonify({'error': 'TMDB client not initialized. Set TMDB_API_KEY in .env'}), 500
+    
+    query = request.args.get('query')
+    year = request.args.get('year')  # optional
+    
+    if not query:
+        return jsonify({'error': 'Missing query'}), 400
+        
+    try:
+        results = _tmdb_client.search(query, year=year)
         return jsonify({'results': results})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

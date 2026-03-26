@@ -689,7 +689,7 @@ def build_name(info: dict[str, Any]) -> str:
     return name
 
 
-def process_file(filepath: str, tag_override: Optional[str] = None, tvdb_client=None, force_tvdb_id: Optional[int] = None) -> dict[str, Any]:
+def process_file(filepath: str, tag_override: Optional[str] = None, tvdb_client=None, force_tvdb_id: Optional[int] = None, mode: str = 'tv') -> dict[str, Any]:
     filepath = os.path.abspath(filepath)
     mi_data = extract_mediainfo(filepath)
     guess = parse_filename(filepath)
@@ -761,6 +761,12 @@ def process_file(filepath: str, tag_override: Optional[str] = None, tvdb_client=
         "tag": tag_override or guess.get("release_group", "")
     }
 
+    # In movie mode, clear TV-specific fields to avoid guessit false positives
+    if mode == 'movie':
+        info_dict["season"] = ""
+        info_dict["episode"] = ""
+        info_dict["episode_title"] = ""
+
     # Enrich with TVDB data if client is provided
     if tvdb_client:
         info_dict = enrich_with_tvdb(info_dict, tvdb_client, force_tvdb_id=force_tvdb_id)
@@ -769,7 +775,7 @@ def process_file(filepath: str, tag_override: Optional[str] = None, tvdb_client=
             "new_name": build_name(info_dict) + os.path.splitext(filepath)[1], "info": info_dict}
 
 
-def process_directory(dirpath: str, tag_override: Optional[str] = None, tvdb_client=None, force_tvdb_id: Optional[int] = None) -> dict[str, Any]:
+def process_directory(dirpath: str, tag_override: Optional[str] = None, tvdb_client=None, force_tvdb_id: Optional[int] = None, mode: str = 'tv') -> dict[str, Any]:
     """Process all video files in a directory and suggest a folder name."""
     dirpath = os.path.abspath(dirpath)
     results = []
@@ -780,7 +786,7 @@ def process_directory(dirpath: str, tag_override: Optional[str] = None, tvdb_cli
         if os.path.splitext(entry)[1].lower() not in video_exts: continue
         if "sample" in entry.lower() and "!sample" not in entry.lower(): continue
         try:
-            results.append(process_file(os.path.join(dirpath, entry), tag_override, tvdb_client=tvdb_client, force_tvdb_id=force_tvdb_id))
+            results.append(process_file(os.path.join(dirpath, entry), tag_override, tvdb_client=tvdb_client, force_tvdb_id=force_tvdb_id, mode=mode))
         except Exception as e:
             results.append({"filepath": os.path.join(dirpath, entry), "old_name": entry, "new_name": None, "error": str(e)})
             
