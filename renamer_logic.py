@@ -9,6 +9,7 @@ Output format example:
 import os
 import re
 import json
+import unicodedata
 from typing import Any, Optional
 
 from pymediainfo import MediaInfo
@@ -22,9 +23,9 @@ AUDIO_FORMAT_MAP: dict[str, str] = {
     "AAC": "AAC",
     "AAC LC": "AAC",
     "AC-3": "DD",
-    "E-AC-3": "DD+",
-    "A_EAC3": "DD+",
-    "Enhanced AC-3": "DD+",
+    "E-AC-3": "DDP",
+    "A_EAC3": "DDP",
+    "Enhanced AC-3": "DDP",
     "MLP FBA": "TrueHD",
     "FLAC": "FLAC",
     "Opus": "Opus",
@@ -46,7 +47,7 @@ AUDIO_ATMOS_INDICATORS: list[str] = [
 
 AUDIO_COMMERCIAL_MAP: dict[str, str] = {
     # Order matters: longer/more-specific keys must come first
-    "Dolby Digital Plus": "DD+",
+    "Dolby Digital Plus": "DDP",
     "Dolby TrueHD": "TrueHD",
     "DTS:X Master Audio": "DTS:X",
     "DTS-HD Master Audio": "DTS-HD.MA",
@@ -60,11 +61,12 @@ AUDIO_CODEC_RANK: dict[str, int] = {
     "TrueHD": 100,
     "DTS:X": 95,
     "DTS-HD.MA": 90,
+    "DDP": 60,
     "FLAC": 85,
     "LPCM": 80,
     "PCM": 80,
     "DTS-HD.HRA": 70,
-    "DD+": 60,
+
     "DTS": 50,
     "DD": 40,
     "AAC": 30,
@@ -306,7 +308,7 @@ def detect_audio(audio_track: dict[str, Any]) -> dict[str, str]:
 
     # Fix: DD can't be 7.1
     if codec == "DD" and chan == "7.1":
-        codec = "DD+"
+        codec = "DDP"
 
     return {
         "audio_codec": codec,
@@ -461,14 +463,229 @@ def detect_edition(filename: str) -> str:
 
 
 def detect_service(filename: str) -> str:
+    """Detect streaming service from filename.
+    Mapping aligned with Upload-Assistant / scene naming conventions.
+    """
     fn = filename.upper()
     services = {
+        # --- Major platforms ---
         "AMZN": "AMZN", "AMAZON": "AMZN",
         "NF": "NF", "NETFLIX": "NF",
-        "DSNP": "DSNP", "DISNEY": "DSNP",
-        "ATVP": "ATVP", "HMAX": "HMAX",
-        "HULU": "HULU", "PCOK": "PCOK",
-        "PMTP": "PMTP", "MA": "MA", "IT": "IT",
+        "DSNP": "DSNP",
+        "ATVP": "ATVP",
+        "HMAX": "HMAX",
+        "MAX": "MAX",
+        "HULU": "HULU",
+        "PCOK": "PCOK",
+        "PMTP": "PMTP", "PMNP": "PMNP", "PMNT": "PMNT",
+        "HBO": "HBO",
+        "MA": "MA",
+        "IT": "iT",
+        # --- Full list (Upload-Assistant aligned) ---
+        "9NOW": "9NOW",
+        "ADN": "ADN",
+        "AE": "AE",
+        "AJAZ": "AJAZ",
+        "ALL4": "ALL4",
+        "AMBC": "AMBC",
+        "AMC": "AMC",
+        "ANLB": "ANLB",
+        "ANPL": "ANPL",
+        "AOL": "AOL",
+        "ARD": "ARD",
+        "AS": "AS",
+        "ATK": "ATK",
+        "ATV": "ATV",
+        "AUBC": "AUBC",
+        "BCORE": "BCORE",
+        "BETP": "BETP",
+        "BILI": "BILI",
+        "BKPL": "BKPL",
+        "BLU": "BLU",
+        "BNGE": "BNGE",
+        "BOOM": "BOOM",
+        "BP": "BP",
+        "BRAV": "BRAV",
+        "CBC": "CBC",
+        "CBS": "CBS",
+        "CC": "CC",
+        "CCGC": "CCGC",
+        "CHGD": "CHGD",
+        "CMAX": "CMAX",
+        "CMOR": "CMOR",
+        "CMT": "CMT",
+        "CN": "CN",
+        "CNBC": "CNBC",
+        "CNGO": "CNGO",
+        "CNLP": "CNLP",
+        "COOK": "COOK",
+        "CORE": "CORE",
+        "CR": "CR",
+        "CRAV": "CRAV",
+        "CRIT": "CRIT",
+        "CRKI": "CRKI",
+        "CRKL": "CRKL",
+        "CSPN": "CSPN",
+        "CTHP": "CTHP",
+        "CTV": "CTV",
+        "CUR": "CUR",
+        "CW": "CW",
+        "CWS": "CWS",
+        "DARKROOM": "DARKROOM",
+        "DAZN": "DAZN",
+        "DCU": "DCU",
+        "DDY": "DDY",
+        "DEST": "DEST",
+        "DF": "DF",
+        "DHF": "DHF",
+        "DISC": "DISC",
+        "DIY": "DIY",
+        "DOCC": "DOCC",
+        "DOCPLAY": "DOCPLAY",
+        "DPLY": "DPLY",
+        "DRPO": "DRPO",
+        "DSCP": "DSCP",
+        "DSKI": "DSKI",
+        "DSNY": "DSNY",
+        "DTV": "DTV",
+        "EPIX": "EPIX",
+        "ESPN": "ESPN",
+        "ESQ": "ESQ",
+        "ETTV": "ETTV",
+        "ETV": "ETV",
+        "FAM": "FAM",
+        "FANDOR": "FANDOR",
+        "FJR": "FJR",
+        "FMIO": "FMIO",
+        "FOOD": "FOOD",
+        "FOX": "FOX", "FOXN": "FOXN", "FOXP": "FOXP",
+        "FP": "FP",
+        "FPT": "FPT",
+        "FREE": "FREE",
+        "FTV": "FTV",
+        "FUNI": "FUNI",
+        "FXTL": "FXTL",
+        "FYI": "FYI",
+        "GC": "GC",
+        "GLBL": "GLBL",
+        "GLBO": "GLBO",
+        "GLOB": "GLOB",
+        "GO90": "GO90",
+        "GPLAY": "GPLAY", "PLAY": "PLAY",
+        "HGTV": "HGTV",
+        "HIDI": "HIDI",
+        "HIST": "HIST",
+        "HLMK": "HLMK",
+        "HS": "HTSR", "HTSR": "HTSR",
+        "ID": "ID",
+        "IFC": "IFC",
+        "IFX": "IFX",
+        "INA": "INA",
+        "IP": "iP",
+        "IQIYI": "iQIYI",
+        "ITV": "ITV", "ITVX": "ITVX",
+        "JOYN": "JOYN",
+        "KAYO": "KAYO",
+        "KCW": "KCW",
+        "KKTV": "KKTV",
+        "KNOW": "KNOW",
+        "KNPY": "KNPY",
+        "KS": "KS",
+        "LIFE": "LIFE",
+        "LN": "LN",
+        "LOOKE": "LOOKE",
+        "MBC": "MBC",
+        "MGG": "MGG",
+        "MNBC": "MNBC",
+        "MTOD": "MTOD",
+        "MTV": "MTV",
+        "MUBI": "MUBI",
+        "NATG": "NATG",
+        "NBA": "NBA",
+        "NBC": "NBC",
+        "NBLA": "NBLA",
+        "NFB": "NFB",
+        "NFL": "NFL", "NFLN": "NFLN",
+        "NICK": "NICK",
+        "NOW": "NOW",
+        "NRK": "NRK",
+        "ODK": "ODK",
+        "OPTO": "OPTO",
+        "ORF": "ORF",
+        "OWN": "OWN",
+        "PA": "PA",
+        "PBS": "PBS", "PBSK": "PBSK",
+        "PKO": "PKO",
+        "PLTV": "PLTV",
+        "PLUZ": "PLUZ",
+        "POGO": "POGO",
+        "PSN": "PSN",
+        "PUHU": "PUHU",
+        "QIBI": "QIBI",
+        "RED": "RED",
+        "RKTN": "RKTN",
+        "RNET": "RNET",
+        "ROKU": "ROKU",
+        "RSTR": "RSTR",
+        "RTE": "RTE",
+        "RTLP": "RTLP",
+        "RUUTU": "RUUTU",
+        "SBS": "SBS",
+        "SCI": "SCI",
+        "SESO": "SESO",
+        "SHAHID": "SHAHID",
+        "SHMI": "SHMI",
+        "SHO": "SHO",
+        "SKST": "SKST",
+        "SNET": "SNET",
+        "SONY": "SONY",
+        "SPIK": "SPIK", "SPKE": "SPKE",
+        "SPRT": "SPRT",
+        "STAN": "STAN",
+        "STARZ": "STARZ", "STZ": "STZ",
+        "STRP": "STRP",
+        "SVT": "SVT",
+        "SWEET": "SWEET",
+        "SWER": "SWER",
+        "SYFY": "SYFY",
+        "TBS": "TBS",
+        "TEN": "TEN",
+        "TF": "TF",
+        "TFOU": "TFOU",
+        "TIMV": "TIMV",
+        "TLC": "TLC",
+        "TOU": "TOU",
+        "TRVL": "TRVL",
+        "TUBI": "TUBI",
+        "TV3": "TV3", "TV4": "TV4",
+        "TVING": "TVING",
+        "TVL": "TVL",
+        "TVNZ": "TVNZ",
+        "UFC": "UFC",
+        "UKTV": "UKTV",
+        "UNIV": "UNIV",
+        "USAN": "USAN",
+        "VH1": "VH1",
+        "VIAP": "VIAP",
+        "VICE": "VICE",
+        "VIKI": "VIKI",
+        "VLCT": "VLCT",
+        "VMEO": "VMEO", "VIMEO": "VIMEO",
+        "VMAX": "VMAX",
+        "VONE": "VONE",
+        "VRV": "VRV",
+        "VUDU": "VUDU",
+        "WAVVE": "WAVVE",
+        "WME": "WME",
+        "WNET": "WNET",
+        "WOWP": "WOWP",
+        "WWEN": "WWEN",
+        "XBOX": "XBOX",
+        "XUMO": "XUMO",
+        "YHOO": "YHOO",
+        "YT": "YT",
+        "ZDF": "ZDF",
+        "ZEE5": "ZEE5",
     }
     for key, value in services.items():
         if re.search(rf'\b{re.escape(key)}\b', fn):
@@ -594,9 +811,26 @@ def enrich_with_tvdb(info_dict: dict[str, Any], tvdb_client, force_tvdb_id: Opti
 
 
 def _sanitize_title(title: str) -> str:
-    title = title.strip().replace(" ", ".")
-    title = re.sub(r'\.{2,}', '.', title)
-    for char in '<>:"/\\|?*': title = title.replace(char, '')
+    """Sanitize title for scene-style filenames.
+    Rules: spaces→dots, remove special chars, keep hyphens.
+    """
+    title = title.strip()
+    # Replace & with 'and' (scene convention)
+    title = title.replace(" & ", " and ")
+    # Replace middle dot (WALL·E → WALL-E)
+    title = title.replace("·", "-")
+    # Remove apostrophes/quotes (It's → Its, C'mon → Cmon)
+    title = re.sub(r"[''ʼ`\"]", "", title)
+    # Transliterate accented chars to ASCII (Amélie → Amelie, Pokémon → Pokemon)
+    title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
+    # Spaces to dots
+    title = title.replace(" ", ".")
+    # Remove all non-alphanumeric except dots and hyphens
+    title = re.sub(r"[^a-zA-Z0-9.\-]", "", title)
+    # Collapse multiple dots
+    title = re.sub(r"\.{2,}", ".", title)
+    # Remove leading/trailing dots
+    title = title.strip(".")
     return title
 
 
@@ -653,7 +887,9 @@ def build_name(info: dict[str, Any]) -> str:
     if res: parts.append(res)
     if hdr: parts.append(hdr)
     if uhd: parts.append(uhd)
-    if source: parts.append(source)
+    # Skip source "WEB" when type is already WEB-DL or WEBRip (redundant)
+    if source and not (source == "WEB" and mtype in ("WEBDL", "WEBRIP")):
+        parts.append(source)
     if service and mtype in ("WEBDL", "WEBRIP"): parts.append(service)
     
     # Type (REMUX, WEB-DL, etc.)
@@ -666,16 +902,23 @@ def build_name(info: dict[str, Any]) -> str:
     elif mtype and mtype != "ENCODE":
         parts.append(mtype)
 
-    # Codecs and Audio
-    if vcodec: parts.append(vcodec)
+    # Audio section (before video codec, per scene naming convention)
+    # Short codecs combine with channels: DDP5.1, DD2.0, AAC2.0
+    _COMBINED_CODECS = {"DD", "DDP", "AAC"}
+    if acodec:
+        if channels and acodec in _COMBINED_CODECS:
+            parts.append(f"{acodec}{channels}")
+        else:
+            parts.append(acodec)
+            if channels: parts.append(channels)
+        if atmos: parts.append(atmos)
+    elif channels:
+        parts.append(channels)
+
     if dual: parts.append(dual)
-    
-    # If DUB is in edition, it's already there, but PTP often wants it near Audio
-    # Actually build_name logic above handles editions first.
-    
-    if acodec: parts.append(acodec)
-    if atmos: parts.append(atmos)
-    if channels: parts.append(channels)
+
+    # Video codec
+    if vcodec: parts.append(vcodec)
     
     # Final flags
     if hybrid: parts.append(hybrid)
@@ -760,6 +1003,11 @@ def process_file(filepath: str, tag_override: Optional[str] = None, tvdb_client=
         "dual_audio": detect_dual_audio(mi_data) or ("dual" in filepath.lower() or "dual" in str(guess.get("audio_channels", "")).lower()),
         "tag": tag_override or guess.get("release_group", "")
     }
+
+    # If guessit picked up the streaming service as the release group, clear it
+    if not tag_override and info_dict["tag"] and info_dict["service"]:
+        if info_dict["tag"].upper() == info_dict["service"].upper():
+            info_dict["tag"] = ""
 
     # In movie mode, clear TV-specific fields to avoid guessit false positives
     if mode == 'movie':

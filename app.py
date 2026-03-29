@@ -1186,6 +1186,30 @@ async function scan() {
     const detectedMode = autoDetectMode(path);
     setMode(detectedMode);
 
+    // In movie mode with a directory, skip the search modal entirely.
+    // Each file is a separate movie and will be looked up individually.
+    if (currentMode === 'movie') {
+        // Check if path looks like a directory (let the backend decide)
+        try {
+            const checkResp = await fetch(`/api/tvdb/suggest?path=${encodeURIComponent(path)}`);
+            const checkData = await checkResp.json();
+            if (checkData.error) {
+                showToast(checkData.error, 'error');
+                return;
+            }
+            if (checkData.is_directory) {
+                // Directory of movies: scan directly with per-file TMDB lookup
+                performScan(true, null);
+                return;
+            }
+            // Single movie file: open search modal with TMDB
+            openSearchModal(checkData.title || '', 'movie', false);
+        } catch (e) {
+            showToast('Error: ' + e.message, 'error');
+        }
+        return;
+    }
+
     try {
         const resp = await fetch(`/api/tvdb/suggest?path=${encodeURIComponent(path)}`);
         const data = await resp.json();
@@ -1195,7 +1219,7 @@ async function scan() {
         }
         
         // Open modal with suggested title — search type depends on mode
-        const type = currentMode === 'tv' ? 'series' : 'movie';
+        const type = 'series';
         openSearchModal(data.title || '', type, path.includes('\\') || path.includes('/'));
     } catch (e) {
         showToast('Error getting suggestion: ' + e.message, 'error');
@@ -1383,8 +1407,8 @@ function renderResults() {
 
     let html = '';
 
-    // Folder Rename Alert
-    if (scanContext && scanContext.new_folder) {
+    // Folder Rename Alert (hide in movie mode — each file is a separate movie)
+    if (scanContext && scanContext.new_folder && currentMode !== 'movie') {
         const isChanged = scanContext.old_folder !== scanContext.new_folder;
         const folderTitle = (currentResults[0]?.info?.title) || scanContext.new_folder.split('(')[0].trim();
         
@@ -1475,7 +1499,7 @@ function renderResults() {
         document.getElementById('actionInfo').textContent = `${renameCount} file(s) to rename.`;
         
         const toggle = document.getElementById('folderRenameToggle');
-        if (scanContext && scanContext.new_folder && scanContext.old_folder !== scanContext.new_folder) {
+        if (scanContext && scanContext.new_folder && scanContext.old_folder !== scanContext.new_folder && currentMode !== 'movie') {
             toggle.style.display = 'block';
         } else {
             toggle.style.display = 'none';
@@ -1637,24 +1661,32 @@ def api_scan():
         if os.path.isdir(path):
             result = process_directory(path, tag_override, tvdb_client=client, force_tvdb_id=force_id, mode=mode)
             
-            # For movie mode with TMDB, enrich with TMDB data
-            if tmdb and mode == 'movie':
+            # For movie mode with TMDB: each file is a separate movie,
+            # so enrich each file individually based on its own parsed title.
+            if mode == 'movie' and _tmdb_client:
+                from renamer_logic import build_name, parse_filename
                 for file_result in result.get('files', []):
-                    if file_result.get('info'):
-                        _enrich_movie_with_tmdb(file_result['info'], tmdb, force_id)
-                # Update folder suggestion based on enriched first file
-                valid_files = [f for f in result['files'] if f.get('new_name')]
-                if valid_files:
-                    from renamer_logic import build_name
-                    result['new_folder'] = build_name(valid_files[0]['info'])
-                    valid_files[0]['new_name'] = result['new_folder'] + os.path.splitext(valid_files[0]['filepath'])[1]
+                    if file_result.get('error') or not file_result.get('info'):
+                        continue
+                    info = file_result['info']
+                    # Use force_id only if a single movie was selected from modal
+                    # (which doesn't happen for directory-of-movies, so force_id is None)
+                    per_file_force_id = force_id if force_id else None
+                    _enrich_movie_with_tmdb(info, _tmdb_client, per_file_force_id)
+                    file_result['new_name'] = build_name(info) + os.path.splitext(file_result['filepath'])[1]
+                
+                # In movie mode, don't suggest folder rename
+                result['new_folder'] = ''
+            elif tmdb and mode == 'movie':
+                # Fallback: TMDB client exists but same logic
+                pass
             
             return jsonify({
                 'dirpath': result['dirpath'],
                 'old_folder': result['old_folder'],
-                'new_folder': result['new_folder'],
+                'new_folder': result.get('new_folder', ''),
                 'results': result['files'],
-                'tvdb_enabled': client is not None or tmdb is not None,
+                'tvdb_enabled': client is not None or _tmdb_client is not None,
             })
         else:
             res = process_file(path, tag_override, tvdb_client=client, force_tvdb_id=force_id, mode=mode)
@@ -1764,8 +1796,9 @@ def api_tvdb_suggest():
     if not path or not os.path.exists(path):
         return jsonify({'error': 'Invalid path'}), 400
     
+    is_directory = os.path.isdir(path)
     suggested_title = ""
-    if os.path.isdir(path):
+    if is_directory:
         # Suggest from folder name
         suggested_title = os.path.basename(path)
     else:
@@ -1781,7 +1814,7 @@ def api_tvdb_suggest():
     except Exception:
         pass
         
-    return jsonify({'title': suggested_title})
+    return jsonify({'title': suggested_title, 'is_directory': is_directory})
 
 
 @app.route('/api/tvdb/search')
